@@ -1,7 +1,6 @@
+# Filename: svm.py
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-%matplotlib inline
 
 """@package docstring
 Support Vector Machine: ML teamwork
@@ -62,6 +61,7 @@ class svm:
         self.postconstruct = kwargs.get('postconstruct', 'IPA')
         
         self.eps = kwargs.get('eps', 1e-10)
+        self.epslow = kwargs.get('epslow', 1e-4)
         self.maxiter = kwargs.get('maxiter', 0) # laterly will auto determined as 2|D|
         
     def _Select(self,X,y):
@@ -122,9 +122,9 @@ class svm:
             _Ip = np.ones((Xp.shape[0]))
             
             for i in range(X.shape[0]):
-                _N2[i] = np.norm(X[i,:])**2
+                _N2[i] = np.linalg.norm(X[i,:])**2
             for i in range(Xp.shape[0]):
-                _Np2[i] = np.norm(Xp[i,:])**2
+                _Np2[i] = np.linalg.norm(Xp[i,:])**2
             
             norm2 = np.outer(_I, _Np2) + np.outer(_N2, _Ip) - 2*np.dot(X,Xp.T)
             sigma = self.kernelargs.get('sigma', 1 )
@@ -195,7 +195,12 @@ class svm:
 
         self.SMO_sequential()
         
-        return np.dot(self.alpha*self.y,self.X), self.b
+        self.accuracy = self.test_accuracy(self.X,self.y)
+        self.w = np.dot(self.alpha,self.X)
+        self.svidx = np.nonzero(self.alpha)[0]
+        self.nsv = len(self.svidx)
+        
+        return self.w, self.b
         
     def SMO_sequential(self):
         """SMO algoithm, for choosing sequential pair (i,j) for optimization
@@ -294,7 +299,7 @@ class svm:
         self._KKTBias()
         return True
         
-    def PostSample(threshold):
+    def PostSample(self,threshold):
         if self.postselect == 'SSCA':
             flag = self.y * ( np.dot(self.alpha*self.y, self.K) + self.b )
             samp_list = np.argwhere(flag > threshold).reshape(1,-1)[0]
@@ -310,53 +315,62 @@ class svm:
             raise ValueError('post sample error')
             
     def preimg(self, Xc, beta, Nt):
-        
-        Z = np.zeros((1,self.nfeature))
-        Z_old = np.ones((1,self.nfeature))
-        
-        sigma = self.kernelargs.get('sigma', 1.0)
-        
         # maxmize cost        
         def cost(Zt):
             Kz1xNt = self._Kernel(Zt, Xc[0:Nt,:])
-            return np.sum( np.dot(Kz1xNt, beta[0:Nt] ))
+            return np.dot(Kz1xNt, beta[0:Nt])[0]
         
         def grad(Zt):
             Kz1xNt = self._Kernel(Zt, Xc[0:Nt,:])
             g1 = Zt * np.sum( np.dot(Kz1xNt, beta[0:Nt] ))
-            g2 = np.dot(Kz1xNt[0,:]*bt, Xc[0:Nt,:])
+            g2 = np.dot(Kz1xNt[0,:]*beta[0:Nt], Xc[0:Nt,:])
             g1[0,:] -= g2
             return g1
+        
+        Z = np.zeros((1,self.nfeature))
+        Z_old = Z.copy()
+        
+        for i in range(50):
+            idx = np.random.randint(0,Nt-1)
+            if cost(Xc[i:i+1,:]) > cost(Z):
+                Z = Xc[i:i+1,:]      
             
-        while np.norm(Z-Z_old) > self.eps:
+        while np.linalg.norm(Z-Z_old) > self.epslow:
             Z_old = Z
+            g = -grad(Z)
             
-            g = - grad(Z)
-     
             t = 1.618
-            Za = Z
-            Z += g; Zb = Z
-            Z += t*g; Zc = Z
-            while cost(Za) < cost(Zb) and cost(Zb) < cost(Zc):
+            Za = Z.copy()
+            Z += g; Zb = Z.copy()
+            Z += t*g; Zc = Z.copy()
+
+            costa = cost(Za); costb = cost(Zb); costc = cost(Zc)
+            while costa < costb and costb < costc:
                 Ztemp = Zc
                 Zc = Zc + t*(Zc-Zb)
-                Zb = Ztemp
                 Za = Zb
-            
-            while cost(Za) > cost(Zb) and cost(Zb) > cost(Zc):
+                Zb = Ztemp
+                costa = cost(Za); costb = cost(Zb); costc = cost(Zc)
+                
+            while costa > costb and costb > costc:
                 Ztemp = Za
                 Za = Za + (Za-Zb)/t
-                Zb = Ztemp
                 Zc = Zb
+                Zb = Ztemp
+                costa = cost(Za); costb = cost(Zb); costc = cost(Zc)
+                
+            #print(costa, costb, costc)    
+            #print('find convex')
             
             Zd = Z; right = True
             while True:
+                #print('cost Zb', costb)
                 if right:
                     Zd = (1.618*Zb + Zc)/2.618
-                    delta = cost(Zd)- cost(Zb);
-                    if(delta < self.eps and delta > - self.eps):
+                    costd = cost(Zd);
+                    if(costd-costb < self.epslow and costd-costb > - self.epslow):
                         break
-                    if delta >0:
+                    if costd-costb > 0:
                         Za = Zb
                         Zb = Zd
                         right = True
@@ -365,55 +379,77 @@ class svm:
                         right = False
                 else:
                     Zd = (1.618*Zb + Za)/2.618
-                    delta = cost(Zd)- cost(Zb);
-                    if(delta < self.eps and delta > - self.eps):
+                    costd = cost(Zd);
+                    if(costd-costb < self.epslow and costd-costb > - self.epslow):
                         break
-                    if delta>0:
+                    if costd-costb >0:
                         Zc = Zb
                         Zb = Zd
                         right = False
                     else:
                         Za = Zd
-                        right = True               
+                        right = True
+                costa = cost(Za); costb = cost(Zb); costc = cost(Zc)
             Z = Zd
+            #print('done Z once')
             
         Xc[Nt,:] = Z
-        Kzz = self._Kernel(Xc[self.Ns:self.Nt+1,:],Xc[self.Ns:self.Nt+1,:])
-        Kzx = self._Kernel(Xc[self.Ns:self.Nt+1,:], self.X)
-        beta[Ns:Nt+1] = - np.dot( np.dot(np.linalg.inv(Kzz), Kzx), self.alpha*self.y )  
+        Kzz = self._Kernel(Xc[self.Ns:Nt+1,:],Xc[self.Ns:Nt+1,:])
+        Kzx = self._Kernel(Xc[self.Ns:Nt+1,:], self.X)
+        beta[self.Ns:Nt+1] = - np.dot( np.dot(np.linalg.inv(Kzz), Kzx), self.alpha*self.y )  
         return Xc, beta
             
             
     def PostConstruct(self, Nc): # Nc is the target number of support vector
         if self.postconstruct == 'IPA' and self.kernel=='gauss': # only support for gauss kernel
-            Xc = np.zeros((self.Ns+Nc,len(self.X[0,:]) ))
+            Xc = np.zeros((self.Ns+Nc,self.nfeature ))
             Xc[0:self.Ns,:] = self.X
             beta = np.zeros((self.Ns+Nc))
-            beta[:self.Ns] = self.alpha*self.y # in this section, alpha=>alpha*y; beta => beta*y
-            
+            beta[0:self.Ns] = self.alpha*self.y # in this section, alpha=>alpha*y; beta => beta*y
+
             for i in range(Nc):
                 Nt = self.Ns + i
                 Xc, beta = self.preimg(Xc, beta, Nt)
+                print("xxx",i)
                 
-            return Xc[self.Ns:,:], - beta[self.Ns:]
+            return Xc[self.Ns:,:], 2*np.heaviside(- beta[self.Ns:],0)-1
         else:
             raise ValueError('post sample error')
             
     def summary(self):
-        accuracy = self.test_accuracy(self.X,self.y)
-        w = np.dot(self.alpha,self.X)
-        svidx = np.nonzero(self.alpha)[0]
-        print('accuracy is %f'%accuracy )
-        print('\nHyper surface:\n\tw =\n',w,'\n\tb =\n',self.b)
-        print('\nSupport vector number:\t%d'%(len(svidx)))
-        print('\nSupport vector f(x):\n', self.predict[svidx])
+        print('accuracy is %f'%self.accuracy )
+        print('\nHyper surface:\n\tw =\n',self.w,'\n\tb =\n',self.b)
+        print('\nSupport vector number:\t%d'%self.nsv)
+        
+    def plot_surface(self, xmin, xmax, ycolors=['k','r'],surfcolors=['b','g']):
+        if(self.nfeature!=2):
+            raise ValueError('plot_surface is only for nfeature=2 case')
+            return
+            
+        for i in range(self.Ns):
+            if(self.y[i] > 0):
+                plt.plot(self.X[i,0],self.X[i,1],'.',c=ycolors[0])
+            else:
+                plt.plot(self.X[i,0],self.X[i,1],'.',c=ycolors[1])
+    
+        w = np.dot(self.alpha*self.y,self.X)
+        b = self.b
+        x1s = np.linspace(xmin,xmax,201)
+        x2s = -w[0]/w[1]*x1s - b/w[1]
+        plt.plot(x1s,x2s,c=surfcolors[0],label='Divide Surface')
+        
+        x2s = -w[0]/w[1]*x1s - (b+1)/w[1]
+        plt.plot(x1s,x2s,c=surfcolors[1], label='Support Surface')
+        x2s = -w[0]/w[1]*x1s - (b-1)/w[1]
+        plt.plot(x1s,x2s,c=surfcolors[1], label='Support Surface')
         
     def test_accuracy(self,Xt,yt):
         Ns_test, _tmp = np.shape(Xt)
         TP=0;FP=0;TN=0;FN=0
         
         Kt = self._Kernel(self.X,Xt)
-        f = np.dot(self.alpha*self.y, self.K) + self.b
+        f = np.dot(self.alpha*self.y, Kt) + self.b
+        
         TP = ( np.heaviside(np.sign(f),0)*np.heaviside(yt,0) ).sum()
         FP = ( np.heaviside(np.sign(f),0)*np.heaviside(-yt,0) ).sum()
         TN = ( np.heaviside(-np.sign(f),0)*np.heaviside(-yt,0) ).sum()
