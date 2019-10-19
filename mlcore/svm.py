@@ -48,10 +48,10 @@ class svm:
         """
         
         self.select = kwargs.get('select', 'origin')
-        self.selectargs = kwargs.get('selectargs', None)
+        self.selectargs = kwargs.get('selectargs', {})
         
         self.kernel = kwargs.get('kernel', 'linear')
-        self.kernelargs = kwargs.get('kernelargs', None)
+        self.kernelargs = kwargs.get('kernelargs', {})
         
         self.C = kwargs.get('C', 1)
         self.gamma = kwargs.get('gamma', 1)
@@ -59,11 +59,12 @@ class svm:
         
         self.postselect = kwargs.get('postselect','SSCA')
         self.postconstruct = kwargs.get('postconstruct', 'IPA')
+        self.postargs = kwargs.get('postargs', {})
         
         self.eps = kwargs.get('eps', 1e-10)
-        self.epslow = kwargs.get('epslow', 1e-4)
+        self.epslow = kwargs.get('epslow', 1e-10)
         self.maxiter = kwargs.get('maxiter', 0) # laterly will auto determined as 2|D|
-        
+    
     def _Select(self,X,y):
         """
             select feature/or sampling of data
@@ -71,29 +72,134 @@ class svm:
             2) random
             3) cluster
         """
-        self.nfeature = np.shape(X)[1]
         
+        self.nfeature = np.shape(X)[1]
+
+        # utilize the original X as the sample of the data
         if self.select == 'origin':
             self.Ns = np.shape(X)[0]
             return X,y
-        
+        # utilize numpy.random.choice to sample a specific percentage of data, then return the data
         elif self.select == 'random':
-            self.Ns = self.selectargs.get('N',100)
-            if self.Ns < np.shape(X)[0]:
-                Xs = np.zeros((self.Ns, np.shape(X)[1]))
-                ys = np.zeros((self.Ns))
-                idx = np.random.choice(np.shape(X)[0], self.Ns, replace=False)
-                for i in range(len(_idx)):
-                    Xs[i,:] = X[idx[i],:]
-                    ys[i] = y[idx[i]]
-                return Xs,ys
-            raise ValueError('random N exceeds oringal data')
-            
+            sample_percentage = self.selectargs.get('per', 0.1)
+            self.Ns = int(np.shape(X)[0] * sample_percentage)
+            sample_id = np.random.choice(np.shape(X)[0], self.Ns, replace = False)
+            Xs = np.zeros((self.Ns, np.shape(X)[1]))
+            ys = np.zeros(self.Ns)
+            for i in range(len(sample_id)):
+                Xs[i] = X[sample_id[i]]
+                ys[i] = y[sample_id[i]]
+            return Xs,ys
+
+        # implement 4 clustering methods to cluster all data
         elif self.select == 'cluster':
-            #TODO
-            # k = self.selectargs.get('k',200)
-            # kmean = kmean(X)
-            # return kmean.kavgs
+            method = self.selectargs.get('method', 'kmeans')
+            # utilize K-Means to cluster different data, and calculate the sum of y value of each cluster, 
+            # if the sum is positive, then the y value of the cluster is +1, else if the sum is negative,
+            # then the y value of the cluster is -1, if the sum is zero, we put all data belonging to the
+            # cluster back to the sample set.
+            if method == 'kmeans':
+                clusters = self.selectargs.get('clusters', 10)
+                Xs = np.zeros((clusters, np.shape(X)[1]))
+                ys = np.zeros(clusters)
+                kmeans = KMeans(n_clusters = clusters, random_state=0).fit(X)
+                Xs = kmeans.cluster_centers_
+                for i in range(np.shape(X)[0]):
+                    ys[kmeans.labels_[i]] += y[i]
+                ys = np.sign(ys)
+                zero_indices = np.where(ys == 0)
+                Xs = np.delete(Xs, zero_indices, 0)
+                ys = np.delete(ys, zero_indices)
+                for i in range(np.shape(X)[0]):
+                    if kmeans.labels_[i] in zero_indices[0]:
+                        Xs = np.append(Xs, [X[i]], 0)
+                        ys = np.append(ys, y[i])
+                self.Ns = np.shape(Xs)[0]
+                return Xs,ys
+
+            # utilize Mean-shift to cluster different data, and calculate the sum of y value of each cluster, 
+            # if the sum is positive, then the y value of the cluster is +1, else if the sum is negative,
+            # then the y value of the cluster is -1, if the sum is zero, we put all data belonging to the
+            # cluster back to the sample set.
+            elif method == 'meanshift':
+                bw = self.selectargs.get('bandwith', 0.1)
+                meanshift = MeanShift(bandwidth = bw).fit(X)
+                clusters = np.unique(meanshift.labels_).shape[0]
+                print(clusters)
+                Xs = meanshift.cluster_centers_
+                ys = np.zeros(clusters)
+                for i in range(np.shape(X)[0]):
+                    ys[meanshift.labels_[i]] += y[i]
+                ys = np.sign(ys)
+                zero_indices = np.where(ys == 0)
+                Xs = np.delete(Xs, zero_indices, 0)
+                ys = np.delete(ys, zero_indices)
+                for i in range(np.shape(X)[0]):
+                    if meanshift.labels_[i] in zero_indices[0]:
+                        Xs = np.append(Xs, [X[i]], 0)
+                        ys = np.append(ys, y[i])
+                self.Ns = np.shape(Xs)[0]
+                return Xs,ys
+
+            # utilize DBSCAN to cluster different data, and calculate the sum of y value of each cluster, 
+            # if the sum is positive, then the y value of the cluster is +1, else if the sum is negative,
+            # then the y value of the cluster is -1, if the sum is zero, we put all data belonging to the
+            # cluster back to the sample set
+            # finally, we put all nosie data back to the sample set.
+            elif method == 'dbscan':
+                argeps = self.selectargs.get('eps', 0.1)
+                argmin_samples = self.selectargs.get('min_samples', 10)
+                dbscan = DBSCAN(eps = argeps, min_samples = argmin_samples).fit(X)
+                clusters = 0
+                if -1 in np.unique(dbscan.labels_):
+                    clusters = np.unique(dbscan.labels_).shape[0] - 1 + np.where(dbscan.labels_ == -1)[0].shape[0]
+                else:
+                    clusters = np.unique(dbscan.labels_).shape[0]
+                Xs = np.zeros((0, np.shape(X)[1]))
+                ys = np.zeros(0)
+                for cnum in np.unique(dbscan.labels_):
+                    if cnum == -1:
+                        indices = np.where(dbscan.labels_ == -1)
+                        Xs = X[indices]
+                        ys = y[indices]
+                    else:
+                        indices = np.where(dbscan.labels_ == cnum)
+                        tempX = X[indices]
+                        tempy = y[indices]
+                        yvalue = np.sum(tempy)
+                        yvalue = np.sign(yvalue)
+                        if yvalue == 0:
+                            Xs = np.append(Xs, tempX, axis = 0)
+                            ys = np.append(ys, tempy)
+                        else:
+                            Xs = np.append(Xs, [np.mean(tempX, axis = 0)], axis = 0)
+                            ys = np.append(ys, yvalue)
+                self.Ns = np.shape(Xs)[0]
+                return Xs,ys
+
+            # utilize Gaussian Mixture Model to cluster different data, and calculate the sum of y value of each cluster, 
+            # if the sum is positive, then the y value of the cluster is +1, else if the sum is negative,
+            # then the y value of the cluster is -1, if the sum is zero, we put all data belonging to the
+            # cluster back to the sample set
+            elif method == 'gmm':
+                components = self.selectargs.get('n_components', 100)
+                print(components)
+                gmm = GaussianMixture(n_components = components).fit(X)
+                Xs = gmm.means_
+                ys = np.zeros(components)
+                label = gmm.predict(X)
+                for i in range(len(label)):
+                    ys[label[i]] += y[i]
+                ys = np.sign(ys)
+                zero_indices = np.where(ys == 0)
+                Xs = np.delete(Xs, zero_indices, 0)
+                ys = np.delete(ys, zero_indices)
+                for i in range(np.shape(X)[0]):
+                    if label[i] in zero_indices[0]:
+                        Xs = np.append(Xs, [X[i]], 0)
+                        ys = np.append(ys, y[i])
+                self.Ns = np.shape(Xs)[0]
+                return Xs,ys
             return X,y
             
     def _Kernel(self,X,Xp):
@@ -313,9 +419,35 @@ class svm:
             return Xs, ys
         else:
             raise ValueError('post sample error')
+    
+    def preimg_fixedpoint(self, Xc, beta, Nt):
+        # RBFPREIMG RBF pre-image by Schoelkopf's fixed-point algorithm.
+        
+        Z = np.dot( 2*np.random.rand(1,Nt)-np.ones((1,Nt)), Xc[0:Nt,:])
+        Z_old = Z + np.float('Inf')
             
-    def preimg(self, Xc, beta, Nt):
-        # maxmize cost        
+        nowiter = 1    
+        while np.linalg.norm(Z-Z_old) > self.eps and nowiter < 10e6:
+            nowiter +=1
+            Z_old = Z
+            
+            KB = self._Kernel(Z, Xc[0:Nt,:]) * beta[0:Nt]
+            costZ = np.sum(KB)
+            
+            if costZ > 0:
+                Z = np.dot(KB, Xc[0:Nt,:]) / costZ;
+            else:
+                Z = np.dot( 2*np.random.rand(1,Nt)-np.ones((1,Nt)), Xc[0:Nt,:])
+            
+        Xc[Nt,:] = Z
+        Kzz = self._Kernel(Xc[self.nsv:Nt+1,:],Xc[self.nsv:Nt+1,:])
+        Kzx = self._Kernel(Xc[self.nsv:Nt+1,:], self.Xsv)
+        beta[self.nsv:Nt+1] = - np.dot( np.dot(np.linalg.inv(Kzz), Kzx), beta[0:self.nsv] )  
+        return Xc, beta
+            
+    def preimg_gradient(self, Xc, beta, Nt):
+        # RBFPREIMG2 RBF pre-image problem by Gradient optimization.
+     
         def cost(Zt):
             Kz1xNt = self._Kernel(Zt, Xc[0:Nt,:])
             return np.dot(Kz1xNt, beta[0:Nt])[0]
@@ -332,19 +464,25 @@ class svm:
         
         for i in range(50):
             idx = np.random.randint(0,Nt-1)
-            if cost(Xc[i:i+1,:]) > cost(Z):
-                Z = Xc[i:i+1,:]      
+            if cost(Xc[idx:idx+1,:]) > cost(Z):
+                Z = Xc[idx:idx+1,:]
             
         while np.linalg.norm(Z-Z_old) > self.epslow:
             Z_old = Z
-            g = -grad(Z)
+            g = grad(Z) # find max of cost, along the deriviative
+            print('g',g)
+            print('cz', cost(Z))
+            print('cz+', cost(Z+0.001*g))
+            print('cz-', cost(Z-0.001*g))
             
             t = 1.618
-            Za = Z.copy()
-            Z += g; Zb = Z.copy()
-            Z += t*g; Zc = Z.copy()
+            Za = Z; Zb = Za+g; Zc = Zb + t*g;
 
             costa = cost(Za); costb = cost(Zb); costc = cost(Zc)
+            print(costa, costb, costc)
+            
+            return Xc, beta
+            
             while costa < costb and costb < costc:
                 Ztemp = Zc
                 Zc = Zc + t*(Zc-Zb)
@@ -391,28 +529,37 @@ class svm:
                         right = True
                 costa = cost(Za); costb = cost(Zb); costc = cost(Zc)
             Z = Zd
-            #print('done Z once')
+            print('done Z once')
             
         Xc[Nt,:] = Z
-        Kzz = self._Kernel(Xc[self.Ns:Nt+1,:],Xc[self.Ns:Nt+1,:])
-        Kzx = self._Kernel(Xc[self.Ns:Nt+1,:], self.X)
-        beta[self.Ns:Nt+1] = - np.dot( np.dot(np.linalg.inv(Kzz), Kzx), self.alpha*self.y )  
+        Kzz = self._Kernel(Xc[self.nsv:Nt+1,:],Xc[self.nsv:Nt+1,:])
+        Kzx = self._Kernel(Xc[self.nsv:Nt+1,:], self.X)
+        beta[self.nsv:Nt+1] = - np.dot( np.dot(np.linalg.inv(Kzz), Kzx), self.alpha*self.y )  
         return Xc, beta
             
             
     def PostConstruct(self, Nc): # Nc is the target number of support vector
+        self.svidx = np.nonzero(self.alpha)[0]
+        self.nsv = len(self.svidx)
+        self.Xsv = self.X[self.svidx,:]
+        self.Asv = self.alpha[self.svidx]
+        self.ysv = self.y[self.svidx]
+        
         if self.postconstruct == 'IPA' and self.kernel=='gauss': # only support for gauss kernel
-            Xc = np.zeros((self.Ns+Nc,self.nfeature ))
-            Xc[0:self.Ns,:] = self.X
-            beta = np.zeros((self.Ns+Nc))
-            beta[0:self.Ns] = self.alpha*self.y # in this section, alpha=>alpha*y; beta => beta*y
+            Xc = np.zeros((self.nsv+Nc,self.nfeature ))
+            Xc[0:self.nsv,:] = self.Xsv
+            beta = np.zeros((self.nsv+Nc))
+            beta[0:self.nsv] = self.Asv*self.ysv # in this section, alpha=>alpha*y; beta => beta*y
 
             for i in range(Nc):
-                Nt = self.Ns + i
-                Xc, beta = self.preimg(Xc, beta, Nt)
+                Nt = self.nsv + i
+                if self.postargs.get('preimg', 'grad') == 'grad':
+                    Xc, beta = self.preimg_gradient(Xc, beta, Nt)
+                elif self.postargs.get('preimg', 'grad') == 'fixed':
+                    Xc, beta = self.preimg_fixedpoint(Xc, beta, Nt)
                 print("xxx",i)
                 
-            return Xc[self.Ns:,:], 2*np.heaviside(- beta[self.Ns:],0)-1
+            return Xc[self.nsv:,:], 2*np.heaviside(- beta[self.nsv:],0)-1
         else:
             raise ValueError('post sample error')
             
